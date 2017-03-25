@@ -9,16 +9,17 @@ import numpy as np
 
 import TensorflowUtils as utils
 import read_LaMemDataset as lamem
-# import read_FlowersDataset as flowers
+import read_FlowersDataset as flowers
 import datetime
 import BatchDatsetReader as dataset
 from six.moves import xrange
 import os
+from skimage.segmentation import slic
 
 FLAGS = tf.flags.FLAGS
 tf.flags.DEFINE_integer("batch_size", "16", "batch size for training")
 tf.flags.DEFINE_string("logs_dir", "logs/", "path to logs directory")
-tf.flags.DEFINE_string("data_dir", "Data_zoo/LaMem/", "path to dataset")
+tf.flags.DEFINE_string("data_dir", "Data_zoo/Flower/", "path to dataset")
 tf.flags.DEFINE_float("learning_rate", "1e-4", "Learning rate for Adam Optimizer")
 tf.flags.DEFINE_float("beta1", "0.9", "Beta 1 value to use in Adam Optimizer")
 tf.flags.DEFINE_string("model_dir", "Model_zoo/", "Path to vgg model mat")
@@ -71,16 +72,16 @@ def vgg_net(weights, image):
     return net
 
 
-def generator(images, train_phase):
+def generator(images, segments, train_phase):
     print("setting up vgg initialized conv layers ...")
     model_data = utils.get_model_data(FLAGS.model_dir, MODEL_URL)
 
     weights = np.squeeze(model_data['layers'])
 
     with tf.variable_scope("generator") as scope:
-        W0 = utils.weight_variable([3, 3, 1, 64], name="W0")
+        W0 = utils.weight_variable([3, 3, 2, 64], name="W0")
         b0 = utils.bias_variable([64], name="b0")
-        conv0 = utils.conv2d_basic(images, W0, b0)
+        conv0 = utils.conv2d_basic(tf.concat([images, segments], 3), W0, b0)
         hrelu0 = tf.nn.relu(conv0, name="relu")
 
         image_net = vgg_net(weights, hrelu0)
@@ -102,12 +103,12 @@ def generator(images, train_phase):
         fuse_2 = tf.add(conv_t2, image_net["pool3"], name="fuse_2")
 
         shape = tf.shape(images)
-        deconv_shape3 = tf.pack([shape[0], shape[1], shape[2], 2])
+        deconv_shape3 = tf.cast([shape[0], shape[1], shape[2], 2], tf.int32)
         W_t3 = utils.weight_variable([16, 16, 2, deconv_shape2[3].value], name="W_t3")
         b_t3 = utils.bias_variable([2], name="b_t3")
         pred = utils.conv2d_transpose_strided(fuse_2, W_t3, b_t3, output_shape=deconv_shape3, stride=8)
 
-    return tf.concat(concat_dim=3, values=[images, pred], name="pred_image")
+    return tf.concat([images, pred], 3, name="pred_image")
 
 
 def train(loss, var_list):
@@ -122,12 +123,13 @@ def main(argv=None):
     print("Setting up network...")
     train_phase = tf.placeholder(tf.bool, name="train_phase")
     images = tf.placeholder(tf.float32, shape=[None, None, None, 1], name='L_image')
+    segments = tf.placeholder(tf.float32, shape=[None, None, None, 1], name='L_image')
     lab_images = tf.placeholder(tf.float32, shape=[None, None, None, 3], name="LAB_image")
 
-    pred_image = generator(images, train_phase)
+    pred_image = generator(images, segments, train_phase)
 
     gen_loss_mse = tf.reduce_mean(2 * tf.nn.l2_loss(pred_image - lab_images)) / (IMAGE_SIZE * IMAGE_SIZE * 100 * 100)
-    tf.scalar_summary("Generator_loss_MSE", gen_loss_mse)
+    tf.summary.scalar("Generator_loss_MSE", gen_loss_mse)
 
     train_variables = tf.trainable_variables()
     for v in train_variables:
@@ -136,17 +138,17 @@ def main(argv=None):
     train_op = train(gen_loss_mse, train_variables)
 
     print("Reading image dataset...")
-    # train_images, testing_images, validation_images = flowers.read_dataset(FLAGS.data_dir)
-    train_images = lamem.read_dataset(FLAGS.data_dir)
+    train_images, testing_images, validation_images = flowers.read_dataset(FLAGS.data_dir)
+    #train_images = lamem.read_dataset(FLAGS.data_dir)
     image_options = {"resize": True, "resize_size": IMAGE_SIZE, "color": "LAB"}
     batch_reader = dataset.BatchDatset(train_images, image_options)
 
     print("Setting up session")
     sess = tf.Session()
-    summary_op = tf.merge_all_summaries()
+    summary_op = tf.summary.merge_all()
     saver = tf.train.Saver()
-    summary_writer = tf.train.SummaryWriter(FLAGS.logs_dir, sess.graph)
-    sess.run(tf.initialize_all_variables())
+    summary_writer = tf.summary.FileWriter(FLAGS.logs_dir, sess.graph)
+    sess.run(tf.global_variables_initializer())
 
     ckpt = tf.train.get_checkpoint_state(FLAGS.logs_dir)
     if ckpt and ckpt.model_checkpoint_path:
@@ -156,7 +158,8 @@ def main(argv=None):
     if FLAGS.mode == 'train':
         for itr in xrange(MAX_ITERATION):
             l_image, color_images = batch_reader.next_batch(FLAGS.batch_size)
-            feed_dict = {images: l_image, lab_images: color_images, train_phase: True}
+            sgmt = np.expand_dims(slic(color_images), axis=3)
+            feed_dict = {images: l_image, segments: sgmt, lab_images: color_images, train_phase: True}
 
             if itr % 10 == 0:
                 mse, summary_str = sess.run([gen_loss_mse, summary_op], feed_dict=feed_dict)
@@ -179,7 +182,8 @@ def main(argv=None):
     elif FLAGS.mode == "test":
         count = 10
         l_image, color_images = batch_reader.get_random_batch(count)
-        feed_dict = {images: l_image, lab_images: color_images, train_phase: False}
+        sgmt = np.expand_dims(slic(color_images), axis=3)
+        feed_dict = {images: l_image, segments: sgmt, lab_images: color_images, train_phase: False}
         save_dir = os.path.join(FLAGS.logs_dir, "image_pred")
         pred = sess.run(pred_image, feed_dict=feed_dict)
         for itr in range(count):
