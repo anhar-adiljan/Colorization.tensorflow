@@ -28,7 +28,7 @@ tf.flags.DEFINE_string('mode', "train", "Mode train/ test")
 
 MODEL_URL = 'http://www.vlfeat.org/matconvnet/models/beta16/imagenet-vgg-verydeep-19.mat'
 
-MAX_ITERATION = int(1e5 + 1)
+MAX_ITERATION = int(2e+4 + 1)
 IMAGE_SIZE = 128
 ADVERSARIAL_LOSS_WEIGHT = 1e-3
 
@@ -156,15 +156,18 @@ def main(argv=None):
         print("Model restored...")
 
     if FLAGS.mode == 'train':
+        error = []
         for itr in xrange(MAX_ITERATION):
             l_image, color_images = batch_reader.next_batch(FLAGS.batch_size)
-            sgmt = np.expand_dims(slic(color_images), axis=3)
+            sgmt = np.expand_dims(slic(l_image, compactness=30, n_segments=1000, sigma=5), axis=3)
             feed_dict = {images: l_image, segments: sgmt, lab_images: color_images, train_phase: True}
 
             if itr % 10 == 0:
                 mse, summary_str = sess.run([gen_loss_mse, summary_op], feed_dict=feed_dict)
                 summary_writer.add_summary(summary_str, itr)
                 print("Step: %d, MSE: %g" % (itr, mse))
+                error.append(mse)
+                np.savetxt('mse.txt', error)
 
             if itr % 100 == 0:
                 saver.save(sess, FLAGS.logs_dir + "model.ckpt", itr)
@@ -182,7 +185,7 @@ def main(argv=None):
     elif FLAGS.mode == "test":
         count = 10
         l_image, color_images = batch_reader.get_random_batch(count)
-        sgmt = np.expand_dims(slic(color_images), axis=3)
+        sgmt = np.expand_dims(slic(l_image, compactness=30, n_segments=1000, sigma=5), axis=3)
         feed_dict = {images: l_image, segments: sgmt, lab_images: color_images, train_phase: False}
         save_dir = os.path.join(FLAGS.logs_dir, "image_pred")
         pred = sess.run(pred_image, feed_dict=feed_dict)
