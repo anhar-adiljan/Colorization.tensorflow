@@ -15,6 +15,7 @@ import BatchDatsetReader as dataset
 from six.moves import xrange
 import os
 from skimage.segmentation import slic
+from skimage import color
 
 FLAGS = tf.flags.FLAGS
 tf.flags.DEFINE_integer("batch_size", "16", "batch size for training")
@@ -28,7 +29,7 @@ tf.flags.DEFINE_string('mode', "train", "Mode train/ test")
 
 MODEL_URL = 'http://www.vlfeat.org/matconvnet/models/beta16/imagenet-vgg-verydeep-19.mat'
 
-MAX_ITERATION = int(2e+4 + 1)
+MAX_ITERATION = int(2e4 + 1)
 IMAGE_SIZE = 128
 ADVERSARIAL_LOSS_WEIGHT = 1e-3
 
@@ -81,7 +82,7 @@ def generator(images, segments, train_phase):
     with tf.variable_scope("generator") as scope:
         W0 = utils.weight_variable([3, 3, 2, 64], name="W0")
         b0 = utils.bias_variable([64], name="b0")
-        conv0 = utils.conv2d_basic(tf.concat([images, segments], 3), W0, b0)
+        conv0 = utils.conv2d_basic(tf.concat(3, [images, segments]), W0, b0)
         hrelu0 = tf.nn.relu(conv0, name="relu")
 
         image_net = vgg_net(weights, hrelu0)
@@ -108,7 +109,7 @@ def generator(images, segments, train_phase):
         b_t3 = utils.bias_variable([2], name="b_t3")
         pred = utils.conv2d_transpose_strided(fuse_2, W_t3, b_t3, output_shape=deconv_shape3, stride=8)
 
-    return tf.concat([images, pred], 3, name="pred_image")
+    return tf.concat(3, [images, pred], name="pred_image")
 
 
 def train(loss, var_list):
@@ -159,7 +160,10 @@ def main(argv=None):
         error = []
         for itr in xrange(MAX_ITERATION):
             l_image, color_images = batch_reader.next_batch(FLAGS.batch_size)
-            sgmt = np.expand_dims(slic(l_image, compactness=30, n_segments=1000, sigma=5), axis=3)
+            sgmtx = slic(l_image, compactness=30, n_segments=1000, sigma=5)
+            sgmt = color.label2rgb(sgmtx, l_image, kind='avg')
+            #sgmt = np.expand_dims(outx, axis=3)
+            #out = color.rgb2lab(outx)[:, :, :, 0]
             feed_dict = {images: l_image, segments: sgmt, lab_images: color_images, train_phase: True}
 
             if itr % 10 == 0:
@@ -185,7 +189,10 @@ def main(argv=None):
     elif FLAGS.mode == "test":
         count = 10
         l_image, color_images = batch_reader.get_random_batch(count)
-        sgmt = np.expand_dims(slic(l_image, compactness=30, n_segments=1000, sigma=5), axis=3)
+        sgmtx = slic(l_image, compactness=30, n_segments=1000, sigma=5)
+        sgmt = color.label2rgb(sgmtx, l_image, kind='avg')
+        #sgmt = np.expand_dims(outx, axis=3)
+        #out = color.rgb2lab(outx)[:, :, :, 0]
         feed_dict = {images: l_image, segments: sgmt, lab_images: color_images, train_phase: False}
         save_dir = os.path.join(FLAGS.logs_dir, "image_pred")
         pred = sess.run(pred_image, feed_dict=feed_dict)
